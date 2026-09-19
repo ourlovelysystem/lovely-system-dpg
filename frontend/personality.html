@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Dear Peanut Gallery — Our Lovely System</title>
+<title>Personalities — Dear Peanut Gallery</title>
 <style>
   :root {
     --primary: #1565c0;
@@ -23,44 +23,63 @@
   h1 { font-size: 20px; font-weight: 500; margin: 16px 0 4px; }
   .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
   .card { background: var(--surface); border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.15); padding: 12px 16px; margin-bottom: 16px; }
-  textarea { width: 100%; min-height: 100px; font-family: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; resize: vertical; }
-  .composer-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+  textarea, input[type=text] { width: 100%; font-family: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; }
+  textarea { min-height: 90px; resize: vertical; }
+  select { font-family: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+  label.field-label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  label.field-label:first-child { margin-top: 0; }
+  .composer-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
   button.md-btn {
     background: var(--primary); color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font-size: 13px; font-weight: 500;
     cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg transform='rotate(-35 16 16)'%3E%3Cellipse cx='16' cy='9' rx='7.5' ry='6.5' fill='%23c9a66b' stroke='%238a6a3f' stroke-width='0.8'/%3E%3Cellipse cx='16' cy='23' rx='7.5' ry='6.5' fill='%23c9a66b' stroke='%238a6a3f' stroke-width='0.8'/%3E%3Cpath d='M16 4 Q13 16 16 28' fill='none' stroke='%238a6a3f' stroke-width='0.8' opacity='0.6'/%3E%3Cpath d='M16 4 Q19 16 16 28' fill='none' stroke='%238a6a3f' stroke-width='0.8' opacity='0.6'/%3E%3C/g%3E%3C/svg%3E") 16 16, pointer;
   }
   button.md-btn:hover { background: var(--primary-dark); }
+  button.md-btn:disabled { opacity: 0.5; cursor: default; }
   .char-count { color: var(--muted); font-size: 12px; }
   .error-note { color: #b71c1c; font-size: 12px; margin-top: 4px; }
-  .prompt-row { padding: 10px 0; border-bottom: 1px dotted var(--border); font-size: 13px; }
-  .prompt-row:last-child { border-bottom: none; }
-  .prompt-author { color: var(--muted); font-weight: 500; margin-right: 8px; }
-  .prompt-time { color: var(--muted); font-size: 11px; float: right; }
+  .signin-note { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .personality-row { padding: 10px 0; border-bottom: 1px dotted var(--border); font-size: 13px; }
+  .personality-row:last-child { border-bottom: none; }
+  .personality-name { font-weight: 500; }
+  .personality-model { color: var(--primary); font-size: 12px; margin-left: 8px; }
+  .personality-author { color: var(--muted); font-size: 11px; float: right; }
+  .personality-prompts { color: var(--muted); margin-top: 4px; white-space: pre-wrap; }
   .empty-note { color: var(--muted); font-size: 13px; padding: 8px 0; }
 </style>
 </head>
 <body>
 
 <main>
-  <h1>Dear Peanut Gallery</h1>
-  <div class="subtitle">Post a prompt. Anyone can answer. (Answering is not built yet — this is prompt submission only.) &mdash; <a href="personality.html">Personalities</a></div>
+  <h1>Personalities</h1>
+  <div class="subtitle">A personality bundles a model with the prompts that define how it answers. <a href="index.html">&larr; Back to prompts</a></div>
 
-  <div class="card">
-    <textarea id="input-text" maxlength="2000" placeholder="Post a prompt for the gallery to answer..."></textarea>
-    <div class="composer-row">
-      <span class="char-count" id="char-count">0 / 2000</span>
-      <button class="md-btn" id="submit-btn">Post</button>
+  <div class="card" id="composer-card">
+    <div id="signin-gate" class="signin-note">Sign in (top right) to see available models and create a personality.</div>
+    <div id="composer-fields" style="display:none;">
+      <label class="field-label" for="name-input">Name</label>
+      <input id="name-input" type="text" maxlength="80" placeholder="e.g. The Grouch" />
+
+      <label class="field-label" for="prompts-input">Prompts</label>
+      <textarea id="prompts-input" maxlength="4000" placeholder="The prompts that define how this personality answers..."></textarea>
+
+      <label class="field-label" for="model-select">Model</label>
+      <select id="model-select"></select>
+
+      <div class="composer-row">
+        <span class="char-count" id="char-count">0 / 4000</span>
+        <button class="md-btn" id="submit-btn">Create personality</button>
+      </div>
+      <div class="error-note" id="submit-error"></div>
     </div>
-    <div class="error-note" id="submit-error"></div>
   </div>
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;">
-      <h1 style="margin:0;font-size:15px;">Prompts</h1>
+      <h1 style="margin:0;font-size:15px;">Existing personalities</h1>
       <button class="md-btn" id="refresh-btn">Refresh</button>
     </div>
-    <div id="prompt-list"></div>
-    <div class="empty-note" id="empty-note" style="display:none;">No prompts yet. Be the first.</div>
+    <div id="personality-list"></div>
+    <div class="empty-note" id="empty-note" style="display:none;">No personalities yet. Be the first.</div>
   </div>
 </main>
 
@@ -68,6 +87,6 @@
 window.OLS_API_BASE = "https://pa51adllfi.execute-api.us-east-1.amazonaws.com";
 </script>
 <script src="ols-session-banner.js"></script>
-<script src="main.js"></script>
+<script src="personality.js"></script>
 </body>
 </html>
