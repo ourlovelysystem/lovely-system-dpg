@@ -32,18 +32,32 @@
   button.md-btn:hover { background: var(--primary-dark); }
   .char-count { color: var(--muted); font-size: 12px; }
   .error-note { color: #b71c1c; font-size: 12px; margin-top: 4px; }
-  .prompt-row { padding: 10px 0; border-bottom: 1px dotted var(--border); font-size: 13px; }
-  .prompt-row:last-child { border-bottom: none; }
+  .prompt-item { padding: 10px 0; border-bottom: 1px dotted var(--border); }
+  .prompt-item:last-child { border-bottom: none; }
+  .prompt-row { font-size: 13px; }
   .prompt-author { color: var(--muted); font-weight: 500; margin-right: 8px; }
   .prompt-time { color: var(--muted); font-size: 11px; float: right; }
   .empty-note { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+  .answers-list { margin: 8px 0 0 16px; }
+  .answer-row { font-size: 12px; padding: 6px 0; border-top: 1px dashed var(--border); }
+  .answer-author { color: var(--primary); font-weight: 500; margin-right: 6px; }
+  .answer-pending { color: var(--muted); font-style: italic; }
+  .answer-error { color: #b71c1c; font-style: italic; }
+
+  .reply-btn { border: none; background: transparent; color: var(--primary); cursor: pointer; font-size: 12px; padding: 6px 0 0; }
+  .reply-panel { margin-top: 8px; padding: 10px; background: #fafbfc; border: 1px solid var(--border); border-radius: 4px; }
+  .reply-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tab-btn { border: 1px solid var(--border); background: #fff; color: var(--text); border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .tab-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .reply-text { min-height: 60px; }
 </style>
 </head>
 <body>
 
 <main>
   <h1>Dear Peanut Gallery</h1>
-  <div class="subtitle">Post a prompt. Anyone can answer. (Answering is not built yet — this is prompt submission only.) &mdash; <a href="personality.html">Personalities</a></div>
+  <div class="subtitle">Post a prompt. Anyone can answer, in their own words or through a personality. &mdash; <a href="personality.html">Personalities</a></div>
 
   <div class="card">
     <textarea id="input-text" maxlength="2000" placeholder="Post a prompt for the gallery to answer..."></textarea>

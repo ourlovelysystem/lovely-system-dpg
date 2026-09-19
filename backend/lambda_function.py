@@ -13,15 +13,19 @@ logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(os.environ["TABLE_NAME"])
+lambda_client = boto3.client("lambda", region_name="us-east-1")
+bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-1")
+FUNCTION_NAME = os.environ["FUNCTION_NAME"]
 
 ALLOWED_ORIGIN = "https://dpg.ourlovelysystem.org"
 
-# Start small (2026-09-19): just prompt submission and a read-only feed.
-# No replies yet - personality construction (this pass) doesn't invoke a
-# model either, it just records the choice for when that's built.
 PROMPT_MAX_LEN = 2000
 PROMPT_RETENTION_DAYS = 90
 FEED_LIMIT = 50
+
+ANSWER_TEXT_MAX_LEN = 2000
+ANSWER_MAX_TOKENS = 600
+LOOKUP_SCAN_LIMIT = 500  # small-scale app; a real index can replace this later
 
 PERSONALITY_NAME_MAX_LEN = 80
 PERSONALITY_PROMPTS_MAX_LEN = 4000
@@ -252,7 +256,159 @@ def handle_get_personalities():
     return response(200, {"personalities": personalities})
 
 
+def get_prompt_by_id(prompt_id):
+    # No secondary index yet - fine at this scale (see LOOKUP_SCAN_LIMIT).
+    resp = table.query(
+        KeyConditionExpression=Key("pk").eq("PROMPT"),
+        ScanIndexForward=False,
+        Limit=LOOKUP_SCAN_LIMIT,
+    )
+    for i in resp.get("Items", []):
+        if i["prompt_id"] == prompt_id:
+            return i
+    return None
+
+
+def get_personality_by_id(personality_id):
+    resp = table.query(
+        KeyConditionExpression=Key("pk").eq("PERSONALITY"),
+        ScanIndexForward=False,
+        Limit=LOOKUP_SCAN_LIMIT,
+    )
+    for i in resp.get("Items", []):
+        if i["personality_id"] == personality_id:
+            return i
+    return None
+
+
+def handle_post_answer(body):
+    prompt_id = body.get("prompt_id")
+    session_id = body.get("session_id")
+    authenticated_user_id = body.get("authenticated_user_id")
+    display_name = body.get("display_name") or None
+    mode = body.get("mode")
+
+    if not validate_session_id(session_id):
+        return response(400, {"error": "invalid session_id"})
+    if not prompt_id or not get_prompt_by_id(prompt_id):
+        return response(404, {"error": "prompt not found"})
+    if mode not in ("self", "personality"):
+        return response(400, {"error": "mode must be 'self' or 'personality'"})
+
+    now = datetime.now(timezone.utc)
+    answer_id = uuid.uuid4().hex
+    created_at = now.isoformat()
+
+    if mode == "self":
+        text = (body.get("text") or "").strip()
+        if not text or len(text) > ANSWER_TEXT_MAX_LEN:
+            return response(400, {"error": f"text is required and must be at most {ANSWER_TEXT_MAX_LEN} characters"})
+        table.put_item(Item={
+            "pk": f"ANSWERS#{prompt_id}",
+            "sk": f"{created_at}#{answer_id}",
+            "answer_id": answer_id,
+            "prompt_id": prompt_id,
+            "author_type": "self",
+            "session_id": session_id,
+            "display_name": display_name,
+            "authenticated_user_id": authenticated_user_id,
+            "status": "complete",
+            "text": text,
+            "created_at": created_at,
+        })
+        return response(201, {"answer_id": answer_id, "status": "complete"})
+
+    # mode == "personality"
+    personality_id = body.get("personality_id")
+    personality = personality_id and get_personality_by_id(personality_id)
+    if not personality:
+        return response(400, {"error": "personality not found"})
+
+    table.put_item(Item={
+        "pk": f"ANSWERS#{prompt_id}",
+        "sk": f"{created_at}#{answer_id}",
+        "answer_id": answer_id,
+        "prompt_id": prompt_id,
+        "author_type": "personality",
+        "session_id": session_id,
+        "display_name": display_name,
+        "authenticated_user_id": authenticated_user_id,
+        "personality_id": personality_id,
+        "personality_name": personality["name"],
+        "model_id": personality["model_id"],
+        "status": "pending",
+        "text": None,
+        "created_at": created_at,
+    })
+
+    prompt_item = get_prompt_by_id(prompt_id)
+    lambda_client.invoke(
+        FunctionName=FUNCTION_NAME,
+        InvocationType="Event",  # async - not behind API Gateway's timeout ceiling
+        Payload=json.dumps({
+            "internal_job": True,
+            "prompt_id": prompt_id,
+            "answer_id": answer_id,
+            "created_at": created_at,
+            "prompt_text": prompt_item["text"],
+            "personality_prompts": personality["prompts"],
+            "model_id": personality["model_id"],
+        }),
+    )
+    return response(202, {"answer_id": answer_id, "status": "pending"})
+
+
+def process_answer_job(event):
+    key = {"pk": f"ANSWERS#{event['prompt_id']}", "sk": f"{event['created_at']}#{event['answer_id']}"}
+    try:
+        resp = bedrock_runtime.converse(
+            modelId=event["model_id"],
+            system=[{"text": event["personality_prompts"]}],
+            messages=[{"role": "user", "content": [{"text": event["prompt_text"]}]}],
+            inferenceConfig={"maxTokens": ANSWER_MAX_TOKENS},
+        )
+        text = resp["output"]["message"]["content"][0]["text"]
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET #s = :s, #t = :t",
+            ExpressionAttributeNames={"#s": "status", "#t": "text"},
+            ExpressionAttributeValues={":s": "complete", ":t": text},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("answer job failed")
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET #s = :s, #t = :t",
+            ExpressionAttributeNames={"#s": "status", "#t": "text"},
+            ExpressionAttributeValues={":s": "error", ":t": str(e)[:500]},
+        )
+
+
+def handle_get_answers(prompt_id):
+    resp = table.query(
+        KeyConditionExpression=Key("pk").eq(f"ANSWERS#{prompt_id}"),
+    )
+    answers = [
+        {
+            "answer_id": i["answer_id"],
+            "author_type": i["author_type"],
+            "display_name": i.get("display_name"),
+            "authenticated_user_id": i.get("authenticated_user_id"),
+            "personality_name": i.get("personality_name"),
+            "model_id": i.get("model_id"),
+            "status": i["status"],
+            "text": i.get("text"),
+            "created_at": i["created_at"],
+        }
+        for i in resp.get("Items", [])
+    ]
+    return response(200, {"answers": answers})
+
+
 def handler(event, context):
+    if event.get("internal_job"):
+        process_answer_job(event)
+        return {}
     method = event.get("requestContext", {}).get("http", {}).get("method")
     if method == "OPTIONS":
         return response(200, {})
@@ -273,6 +429,11 @@ def handler(event, context):
         if segments == ["personalities"] and method == "POST":
             body = json.loads(event.get("body") or "{}")
             return handle_post_personality(body)
+        if segments == ["answers"] and method == "POST":
+            body = json.loads(event.get("body") or "{}")
+            return handle_post_answer(body)
+        if len(segments) == 2 and segments[0] == "answers" and method == "GET":
+            return handle_get_answers(segments[1])
     except Exception as e:  # noqa: BLE001
         logger.exception("handler error")
         return response(500, {"error": str(e)})
