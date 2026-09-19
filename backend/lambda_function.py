@@ -25,6 +25,11 @@ FEED_LIMIT = 50
 
 ANSWER_TEXT_MAX_LEN = 2000
 ANSWER_MAX_TOKENS = 600
+# Cost guardrail (2026-09-19): the only thing in this app with real per-call
+# dollar cost is a personality answer invoking Bedrock. Global, not per-IP/
+# session - the point is a hard ceiling on worst-case spend regardless of
+# who or what triggers it, not identifying a culprit.
+ANSWER_HOURLY_LIMIT = 5
 LOOKUP_SCAN_LIMIT = 500  # small-scale app; a real index can replace this later
 
 PERSONALITY_NAME_MAX_LEN = 80
@@ -281,6 +286,22 @@ def get_personality_by_id(personality_id):
     return None
 
 
+def check_and_increment_answer_rate_limit(now):
+    key = {"pk": "RATELIMIT", "sk": f"ANSWERS#{now.strftime('%Y-%m-%dT%H')}"}
+    item = table.get_item(Key=key).get("Item")
+    count = int(item.get("count", 0)) if item else 0
+    if count >= ANSWER_HOURLY_LIMIT:
+        return False
+    ttl_epoch = int((now + timedelta(days=2)).timestamp())
+    table.update_item(
+        Key=key,
+        UpdateExpression="ADD #c :one SET #t = :ttl",
+        ExpressionAttributeNames={"#c": "count", "#t": "ttl"},
+        ExpressionAttributeValues={":one": 1, ":ttl": ttl_epoch},
+    )
+    return True
+
+
 def handle_post_answer(body):
     prompt_id = body.get("prompt_id")
     session_id = body.get("session_id")
@@ -323,6 +344,8 @@ def handle_post_answer(body):
     personality = personality_id and get_personality_by_id(personality_id)
     if not personality:
         return response(400, {"error": "personality not found"})
+    if not check_and_increment_answer_rate_limit(now):
+        return response(429, {"error": f"hourly limit of {ANSWER_HOURLY_LIMIT} personality answers reached - try again later"})
 
     table.put_item(Item={
         "pk": f"ANSWERS#{prompt_id}",
