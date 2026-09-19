@@ -360,6 +360,13 @@ def handle_post_answer(body):
 
 def process_answer_job(event):
     key = {"pk": f"ANSWERS#{event['prompt_id']}", "sk": f"{event['created_at']}#{event['answer_id']}"}
+    # attribute_exists guard: async invocations can in principle still be
+    # retried (platform-level, outside MaximumRetryAttempts=0's control in
+    # rare cases) or race a delete - without this, update_item's default
+    # upsert behavior would silently recreate a bare, malformed item for an
+    # answer that was already removed. Found this the hard way (2026-09-19):
+    # a retried job outlived a deleted pending record and did exactly that.
+    condition = "attribute_exists(pk)"
     try:
         resp = bedrock_runtime.converse(
             modelId=event["model_id"],
@@ -371,17 +378,24 @@ def process_answer_job(event):
         table.update_item(
             Key=key,
             UpdateExpression="SET #s = :s, #t = :t",
+            ConditionExpression=condition,
             ExpressionAttributeNames={"#s": "status", "#t": "text"},
             ExpressionAttributeValues={":s": "complete", ":t": text},
         )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.info("answer %s no longer exists, dropping result", event["answer_id"])
     except Exception as e:  # noqa: BLE001
         logger.exception("answer job failed")
-        table.update_item(
-            Key=key,
-            UpdateExpression="SET #s = :s, #t = :t",
-            ExpressionAttributeNames={"#s": "status", "#t": "text"},
-            ExpressionAttributeValues={":s": "error", ":t": str(e)[:500]},
-        )
+        try:
+            table.update_item(
+                Key=key,
+                UpdateExpression="SET #s = :s, #t = :t",
+                ConditionExpression=condition,
+                ExpressionAttributeNames={"#s": "status", "#t": "text"},
+                ExpressionAttributeValues={":s": "error", ":t": str(e)[:500]},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info("answer %s no longer exists, dropping error", event["answer_id"])
 
 
 def handle_get_answers(prompt_id):
@@ -390,17 +404,18 @@ def handle_get_answers(prompt_id):
     )
     answers = [
         {
-            "answer_id": i["answer_id"],
-            "author_type": i["author_type"],
+            "answer_id": i.get("answer_id"),
+            "author_type": i.get("author_type"),
             "display_name": i.get("display_name"),
             "authenticated_user_id": i.get("authenticated_user_id"),
             "personality_name": i.get("personality_name"),
             "model_id": i.get("model_id"),
-            "status": i["status"],
+            "status": i.get("status"),
             "text": i.get("text"),
-            "created_at": i["created_at"],
+            "created_at": i.get("created_at"),
         }
         for i in resp.get("Items", [])
+        if i.get("answer_id")  # defensive: drop any malformed/orphaned rows
     ]
     return response(200, {"answers": answers})
 
